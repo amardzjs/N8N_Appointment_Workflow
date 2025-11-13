@@ -1,0 +1,554 @@
+{
+  "name": "RDV",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -432,
+        -64
+      ],
+      "id": "a177ced2-b77e-456f-b812-fbb698de4755",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "lfjkXcgL8DkApPAV",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [
+        -208,
+        144
+      ],
+      "id": "f776861b-a2cc-47f1-9cce-e6e1635101a5",
+      "name": "DeepSeek Chat Model1",
+      "credentials": {
+        "deepSeekApi": {
+          "id": "8KU16DQHCBm0iULH",
+          "name": "DeepSeek account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let text = $input.first().json.text;\n\n// Clean up escaped characters and formatting\ntext = text\n  .replace(/```json|```/gi, '')\n  .replace(/\\\\n/g, ' ')\n  .replace(/\\\\+\"/g, '\"')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\n// Try parsing as JSON\nlet data = {};\ntry {\n  data = JSON.parse(text);\n} catch (err) {\n  const timeMatch = text.match(/\"appointment_(?:datetime|time)\"\\s*:\\s*\"([^\"]+)\"/);\n  const dateMatch = text.match(/\"date\"\\s*:\\s*\"([^\"]+)\"/);\n  const timeOnlyMatch = text.match(/\"time\"\\s*:\\s*\"([^\"]+)\"/);\n  const nameMatch = text.match(/\"patient_name\"\\s*:\\s*\"([^\"]+)\"/);\n  const emailMatch = text.match(/\"patient_email\"\\s*:\\s*\"([^\"]+)\"/) || text.match(/\"email\"\\s*:\\s*\"([^\"]+)\"/);\n  const appointmentMatch = text.match(/\"appointment\"\\s*:\\s*(true|false)/);\n  \n  data = {\n    appointment_time: timeMatch ? timeMatch[1] : null,\n    date: dateMatch ? dateMatch[1] : null,\n    time: timeOnlyMatch ? timeOnlyMatch[1] : null,\n    patient_name: nameMatch ? nameMatch[1] : 'Unknown',\n    patient_email: emailMatch ? emailMatch[1] : 'no-email@example.com',\n    appointment: appointmentMatch ? appointmentMatch[1] === 'true' : false,\n  };\n}\n\n// Check if appointment is false - stop processing\nif (data.appointment === false) {\n  return {\n    json: {\n      appointment: false,\n      message: 'No appointment request detected',\n      patient_email: data.patient_email || 'no-email@example.com'\n    }\n  };\n}\n\n// Determine final date and time\nlet finalDate = null;\nlet finalTime = null;\n\nif (data.appointment_time) {\n  const split = (data.appointment_time || '').split(' ');\n  finalDate = split[0] || null;\n  finalTime = split[1] || '09:00';\n} else {\n  finalDate = data.date || null;\n  finalTime = data.time || '09:00';\n}\n\n// Validate date and time\nif (!finalDate) throw new Error('Date is missing in input');\nif (!finalTime) finalTime = '09:00';\n\n// Ensure time has seconds\nconst timeParts = (finalTime || '09:00').split(':');\nconst hours = (timeParts[0] || '09').padStart(2, '0');\nconst minutes = (timeParts[1] || '00').padStart(2, '0');\nconst seconds = (timeParts[2] || '00').padStart(2, '0');\n\n// Create ISO datetime\nconst startDateTime = `${finalDate}T${hours}:${minutes}:${seconds}+01:00`;\n\n// End time 1 hour later\nconst endDate = new Date(`${finalDate}T${hours}:${minutes}:${seconds}`);\nendDate.setHours(endDate.getHours() + 1);\nconst endDateTime = endDate.toISOString().slice(0, 19) + '+01:00';\n\n// Ensure patient email exists\nconst patientEmail = data.patient_email || 'no-email@example.com';\n\nreturn {\n  json: {\n    appointment: true,\n    start: startDateTime,\n    end: endDateTime,\n    summary: `Appointment - ${data.patient_name}`,\n    description: `Patient: ${data.patient_name}\\nEmail: ${patientEmail}`,\n    attendeesEmails: patientEmail,\n    patient_name: data.patient_name,\n    patient_email: patientEmail\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        -48
+      ],
+      "id": "74ddc1cd-daeb-45cf-9bd6-de51ab1cfdbb",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an appointment extraction assistant for a medical office.\n\nTASK:\nExtract appointment details from this email snippet: {{ $json.snippet }}\n\nCRITICAL RULE - APPOINTMENT TIME SLOTS:\nAppointments are ONLY available at these times:\n08:00, 08:30, 09:00, 09:30, 10:00, 10:30, 11:00, 11:30, 12:00, 12:30, 13:00, 13:30, 14:00, 14:30, 15:00, 15:30\n\nYOU MUST round any time to the nearest 30-minute slot:\n- 08:15 becomes 08:30\n- 08:17 becomes 08:30\n- 09:45 becomes 10:00\n- 10:17 becomes 10:30\n- 14:20 becomes 14:30\n\nNEVER output times ending in :15, :17, :20, :33, :45 or any minutes other than :00 or :30\n\nEXTRACTION RULES:\n1. Date: Extract appointment date in format YYYY-MM-DD (assume year 2025 if not specified)\n2. Time: Extract and ROUND to nearest 30-minute slot in format HH:MM:SS\n   - Round 0-15 minutes DOWN to :00\n   - Round 16-45 minutes UP to :30\n   - Round 46-59 minutes UP to next hour :00\n3. Patient name: Extract the patient's full name from the email\n4. Patient email: Use {{ $json.From }}\n5. Appointment: Set to true if email requests an appointment, false otherwise\n6. Closed: Set to true if requested time is OUTSIDE business hours (08:00-16:00), false if WITHIN business hours\n\nBUSINESS HOURS: 08:00 to 16:00 (8 AM to 4 PM)\n\nSPECIAL CASES:\n- If NO date/time mentioned: Set appointment to false, respond in same language asking for date/time\n- If time before 08:00 or after 16:00: Set Closed to true\n- If time between 08:00 and 16:00: Set Closed to false\n\nOUTPUT FORMAT - RETURN ONLY THIS JSON:\n{\n  \"date\": \"YYYY-MM-DD\",\n  \"time\": \"HH:MM:SS\",\n  \"patient_name\": \"string\",\n  \"patient_email\": \"string\",\n  \"appointment\": boolean,\n  \"Closed\": boolean\n}\n\nREMEMBER: Time MUST end in :00:00 or :30:00 - NO EXCEPTIONS",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        -304,
+        -48
+      ],
+      "id": "b5caece4-dc0e-4b7b-954b-22b6f5c156bc",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "37b422eb-0cd6-44d7-8c58-6a741b113a1b",
+              "leftValue": "={{ $json.available }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        -80
+      ],
+      "id": "cbfd6ae3-9f08-4375-9660-a25c258eb469",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "resource": "calendar",
+        "calendar": {
+          "__rl": true,
+          "value": "douaneamar.2000@gmail.com",
+          "mode": "list",
+          "cachedResultName": "douaneamar.2000@gmail.com"
+        },
+        "timeMin": "={{ $json.start }}",
+        "timeMax": "={{ $json.end }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        352,
+        0
+      ],
+      "id": "d9971adb-4727-4918-ad62-4aa5e595b8c0",
+      "name": "Get availability in a calendar",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ogG9ydIWh1yeMC2o",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "douaneamar.2000@gmail.com",
+          "mode": "list",
+          "cachedResultName": "douaneamar.2000@gmail.com"
+        },
+        "start": "={{ $('Code in JavaScript').item.json.start }}",
+        "end": "={{ $('Code in JavaScript').item.json.end }}",
+        "additionalFields": {
+          "summary": "={{ $('Gmail Trigger').first().json.From }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        672,
+        -176
+      ],
+      "id": "4e9365af-5d5d-48fd-a0d2-ae527e6ce4c0",
+      "name": "Create an event",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ogG9ydIWh1yeMC2o",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "calendar",
+        "calendar": {
+          "__rl": true,
+          "value": "douaneamar.2000@gmail.com",
+          "mode": "list",
+          "cachedResultName": "douaneamar.2000@gmail.com"
+        },
+        "timeMin": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Start_Time', ``, 'string') }}",
+        "timeMax": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('End_Time', ``, 'string') }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendarTool",
+      "typeVersion": 1.3,
+      "position": [
+        800,
+        224
+      ],
+      "id": "07dfb91e-cd3c-4f35-a2ba-d07118d7f27f",
+      "name": "Get availability in a calendar in Google Calendar",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ogG9ydIWh1yeMC2o",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [
+        608,
+        240
+      ],
+      "id": "995874ff-9186-4407-8720-50e847390354",
+      "name": "DeepSeek Chat Model",
+      "credentials": {
+        "deepSeekApi": {
+          "id": "8KU16DQHCBm0iULH",
+          "name": "DeepSeek account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an appointment scheduling assistant for a medical office.\n\nTASK:\nThe requested appointment time is already booked. You need to inform the patient and offer alternative times.\n\nCONTEXT:\n- Original email language/style: {{ $('Gmail Trigger').first().json.snippet }}\n- Available time slots from Google Calendar: [will be provided by the calendar tool]\n\nINSTRUCTIONS:\n1. Inform the patient their requested time is already booked (keep it brief and polite)\n2. Suggest 3 available alternative time slots from the Google Calendar\n3. Ask them to choose one of the suggested times\n4. Match the language and tone of the original email (formal/informal, French/English/etc.)\n5. Keep response under 100 characters for the initial message, then list the 3 time options\n\nAPPOINTMENT RULES:\n- Business hours: 08:00 to 16:00\n- Only 30-minute slots: XX:00 or XX:30\n- Format times clearly (e.g., \"13 Nov at 09:00\" or \"13 novembre à 09h00\")\n\nRESPONSE FORMAT:\n[Brief message about time being booked]\n\nAvailable alternatives:\n1. [Date and time option 1]\n2. [Date and time option 2]\n3. [Date and time option 3]\n\nPlease reply with your preferred time.\n\nEXAMPLE (if email was in French):\nDésolé, ce créneau est déjà réservé.\n\nDisponibilités:\n1. 14 novembre à 09:00\n2. 14 novembre à 14:30\n3. 15 novembre à 10:00\n\nLequel vous convient?",
+        "hasOutputParser": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        640,
+        -16
+      ],
+      "id": "0f2fdea0-1ac7-4d0e-8a69-e1bc2f4d6dbb",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.appointment }}",
+                    "rightValue": "false",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "false",
+                      "singleValue": true
+                    },
+                    "id": "d81f04f9-e29d-4961-ad98-32c8f18b3e3a"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Appointment false"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "af478aba-7745-4e4d-be59-baeaee0dcdbb",
+                    "leftValue": "={{ $json.appointment }}",
+                    "rightValue": "true",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Appointment True"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        112,
+        -48
+      ],
+      "id": "6e558330-d39a-47b2-bafd-c2026a72e95b",
+      "name": "Switch1"
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Gmail Trigger').first().json.id }}",
+        "message": "Veuillez choisir la date et l'heure de votre rendez-vous.  Merci",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        288,
+        -272
+      ],
+      "id": "a572d7f6-16c1-4c87-b46d-dee6b3b478e1",
+      "name": "Reply to a message",
+      "webhookId": "6a5ffe4f-759b-4f14-b951-6fbb38de473c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "lfjkXcgL8DkApPAV",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Gmail Trigger').first().json.id }}",
+        "emailType": "text",
+        "message": "=Le rendez-vous a été pris à :\n\n\n{{ $('Code in JavaScript').item.json.start.toDateTime().format('ff') }}\n\n\n\nMerci",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        -208
+      ],
+      "id": "a0bf274d-aa69-4f12-836d-51d101fc8a15",
+      "name": "Reply to a message1",
+      "webhookId": "60fb469c-ab9b-4ebc-bcec-b75cbbaee997",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "lfjkXcgL8DkApPAV",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Gmail Trigger').first().json.id }}",
+        "message": "={{ $json.output }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        992,
+        48
+      ],
+      "id": "7b8a3083-0359-461b-ba56-d93694da775f",
+      "name": "Reply to a message2",
+      "webhookId": "60fb469c-ab9b-4ebc-bcec-b75cbbaee997",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "lfjkXcgL8DkApPAV",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Gmail Trigger').first().json.threadId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        704,
+        192
+      ],
+      "id": "75cf80a0-8ea7-4d4a-96d4-fc93a368e465",
+      "name": "Simple Memory"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Switch1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get availability in a calendar": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Create an event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create an event": {
+      "main": [
+        [
+          {
+            "node": "Reply to a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get availability in a calendar in Google Calendar": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Reply to a message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch1": {
+      "main": [
+        [
+          {
+            "node": "Reply to a message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get availability in a calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply to a message1": {
+      "main": [
+        []
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "2d33c022-9d1a-4edc-adb8-c7ba54fcf978",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c648e1e4f693283291f6bcab3f09379179d793014aa8161c6f491153fdf78930"
+  },
+  "id": "o9iay8gLJBVB4btD",
+  "tags": []
+}
